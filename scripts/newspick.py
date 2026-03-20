@@ -9,6 +9,7 @@ Notion にトグル形式で転記する。外部ライブラリ不要。
 """
 
 import datetime
+import email.utils
 import json
 import logging
 import os
@@ -50,6 +51,9 @@ CHECK_INTERVAL_SEC = int(os.environ.get("CHECK_INTERVAL_SEC", "30"))
 AI_MODEL           = os.environ.get("AI_MODEL", "gpt-4o-mini")
 AI_ENDPOINT        = os.environ.get("AI_ENDPOINT", "https://models.inference.ai.azure.com/chat/completions")
 
+# JST タイムゾーン
+_JST = datetime.timezone(datetime.timedelta(hours=9))
+
 # ── ロギング ──────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -75,9 +79,7 @@ def _validate() -> bool:
     return True
 
 # ── HTTP ユーティリティ ────────────────────────────────────────────
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; Newspick/3.0)"
-}
+_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Newspick/3.0)"}
 
 def _get(url: str, timeout: int = 20) -> str:
     req = Request(url, headers=_HEADERS)
@@ -92,6 +94,35 @@ def _get(url: str, timeout: int = 20) -> str:
             else:
                 log.error(f"取得失敗 [{url}]: {e}")
                 return ""
+
+# ── 日付パーサー ──────────────────────────────────────────────────
+def _parse_date(date_str: str) -> datetime.date | None:
+    """RSS の各種日付形式を JST の date に変換"""
+    if not date_str:
+        return None
+    # RFC 2822 (例: Thu, 20 Mar 2026 03:00:00 +0000)
+    try:
+        dt = email.utils.parsedate_to_datetime(date_str)
+        return dt.astimezone(_JST).date()
+    except Exception:
+        pass
+    # ISO 8601 (例: 2026-03-20T03:00:00Z)
+    try:
+        dt = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        return dt.astimezone(_JST).date()
+    except Exception:
+        pass
+    return None
+
+def filter_today(articles: list[dict]) -> list[dict]:
+    """本日（JST）の記事のみ返す。なければ全件返す"""
+    today = datetime.datetime.now(_JST).date()
+    today_articles = [a for a in articles if _parse_date(a.get("published", "")) == today]
+    if today_articles:
+        log.info(f"本日の記事: {len(today_articles)} 件（全 {len(articles)} 件中）")
+        return today_articles
+    log.info("本日付の記事なし → 最新記事を使用")
+    return articles
 
 # ── RSS パーサー ──────────────────────────────────────────────────
 _ATOM_NS = "http://www.w3.org/2005/Atom"
@@ -174,7 +205,7 @@ def collect_articles() -> list[dict]:
     all_articles.extend(arxiv)
     log.info(f"    → {len(arxiv)} 件")
     log.info(f"合計 {len(all_articles)} 件収集完了")
-    return all_articles
+    return filter_today(all_articles)
 
 # ── AI 分析（GitHub Models） ──────────────────────────────────────
 _ANALYSIS_PROMPT = """\
@@ -185,6 +216,7 @@ _ANALYSIS_PROMPT = """\
 
 ## 出力（JSONのみ。説明・コードブロック不要）
 {{
+  "daily_summary": "本日のAI業界の重要トピックを3〜5文で日本語まとめ。ビジネス活用視点を含める。",
   "articles": [
     {{
       "title_ja": "日本語タイトル",
@@ -200,7 +232,7 @@ _ANALYSIS_PROMPT = """\
   ],
   "trend_summary": {{
     "themes": ["主要テーマ1", "主要テーマ2", "主要テーマ3"],
-    "business_insight": "今週のAIビジネス活用における示唆（1〜2文）"
+    "business_insight": "今日のAIビジネス活用における示唆（1〜2文）"
   }}
 }}
 
@@ -274,7 +306,7 @@ def _notion(method: str, endpoint: str, body: dict | None = None) -> dict:
                 raise
 
 def _create_page() -> str:
-    today    = datetime.date.today()
+    today    = datetime.datetime.now(_JST).date()
     today_jp = today.strftime("%Y年%m月%d日")
     result   = _notion("POST", "pages", {
         "parent":     {"database_id": NOTION_DATABASE_ID},
@@ -291,6 +323,9 @@ def _create_page() -> str:
 def _rich(text: str) -> list:
     return [{"type": "text", "text": {"content": text[:2000]}}]
 
+def _rich_link(text: str, url: str) -> list:
+    return [{"type": "text", "text": {"content": text[:2000], "link": {"url": url}}}]
+
 def _h1(text: str) -> dict:
     return {"object": "block", "type": "heading_1",
             "heading_1": {"rich_text": _rich(text)}}
@@ -299,6 +334,10 @@ def _para(text: str) -> dict:
     return {"object": "block", "type": "paragraph",
             "paragraph": {"rich_text": _rich(text)}}
 
+def _para_link(text: str, url: str) -> dict:
+    return {"object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": _rich_link(text, url)}}
+
 def _bullet(text: str) -> dict:
     return {"object": "block", "type": "bulleted_list_item",
             "bulleted_list_item": {"rich_text": _rich(text)}}
@@ -306,58 +345,65 @@ def _bullet(text: str) -> dict:
 def _divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
 
+def _callout(text: str, emoji: str = "📋") -> dict:
+    return {"object": "block", "type": "callout",
+            "callout": {"rich_text": _rich(text), "icon": {"type": "emoji", "emoji": emoji}}}
+
 def _toggle(title: str, children: list[dict]) -> dict:
-    return {
-        "object": "block",
-        "type": "toggle",
-        "toggle": {
-            "rich_text": _rich(title),
-            "children": children,
-        },
-    }
+    return {"object": "block", "type": "toggle",
+            "toggle": {"rich_text": _rich(title), "children": children}}
 
 def _article_toggle(a: dict) -> dict:
-    """記事1件をトグルブロックに変換"""
     impact_icon = {"High": "🔴", "Medium": "🟡", "Low": "🔵"}.get(a.get("impact", ""), "⚪")
-    title = f"{impact_icon} {a.get('title_ja', a.get('title', ''))}"
+    title    = f"{impact_icon} {a.get('title_ja', a.get('title', ''))}"
+    url      = a.get("url", "")
     children = [
-        _para(f"📎 URL: {a.get('url', '')}"),
-        _para(f"📅 公開日: {a.get('published', '')}  |  📌 {a.get('source', '')}"),
-        _para(f"🏷 カテゴリ: {a.get('category', '')}"),
+        _para(f"📅 {a.get('published', '')}  |  📌 {a.get('source', '')}  |  🏷 {a.get('category', '')}"),
         _para(f"📝 {a.get('summary_ja', a.get('description', ''))}"),
     ]
     if a.get("business_use"):
         children.append(_para(f"💼 ビジネス活用: {a['business_use']}"))
     children.append(_para(f"📊 インパクト [{a.get('impact', '')}]: {a.get('impact_reason', '')}"))
+    if url:
+        children.append(_para_link("🔗 記事を読む", url))
     return _toggle(title, children)
 
 def _send_blocks(page_id: str, blocks: list[dict]) -> None:
-    """50件ずつ分割して Notion に送信"""
     for i in range(0, len(blocks), 50):
         chunk = blocks[i:i + 50]
         _notion("PATCH", f"blocks/{page_id}/children", {"children": chunk})
         log.info(f"ブロック追加: {i+1}〜{i+len(chunk)} / {len(blocks)}")
 
 def add_blocks_analyzed(page_id: str, analysis: dict) -> None:
-    """AI 分析結果をトグル形式で転記"""
     articles = analysis.get("articles", [])
     high   = [a for a in articles if a.get("impact") == "High"]
     medium = [a for a in articles if a.get("impact") == "Medium"]
     low    = [a for a in articles if a.get("impact") == "Low"]
 
-    blocks: list[dict] = [_h1("🔴 Top Pick（High Impact）")]
+    blocks: list[dict] = []
+
+    # 冒頭サマリー
+    if analysis.get("daily_summary"):
+        blocks.append(_callout(analysis["daily_summary"], "🗞️"))
+        blocks.append(_divider())
+
+    # トレンドサマリー
+    trend = analysis.get("trend_summary", {})
+    if trend.get("themes") or trend.get("business_insight"):
+        blocks.append(_h1("📊 本日のトレンド"))
+        for theme in trend.get("themes", []):
+            blocks.append(_bullet(theme))
+        if trend.get("business_insight"):
+            blocks.append(_para(f"💼 ビジネス示唆: {trend['business_insight']}"))
+        blocks.append(_divider())
+
+    # 記事一覧
+    blocks.append(_h1("🔴 Top Pick（High Impact）"))
     blocks += [_article_toggle(a) for a in high] or [_para("該当なし")]
     blocks.append(_h1("🟡 注目記事（Medium Impact）"))
     blocks += [_article_toggle(a) for a in medium] or [_para("該当なし")]
     blocks.append(_h1("🔵 参考情報（Low Impact）"))
     blocks += [_article_toggle(a) for a in low] or [_para("該当なし")]
-
-    trend = analysis.get("trend_summary", {})
-    blocks.append(_h1("📊 本日のトレンドサマリー"))
-    for theme in trend.get("themes", []):
-        blocks.append(_bullet(theme))
-    if trend.get("business_insight"):
-        blocks.append(_para(f"💼 ビジネス示唆: {trend['business_insight']}"))
 
     _send_blocks(page_id, blocks)
 
@@ -371,11 +417,13 @@ def add_blocks_raw(page_id: str, articles: list[dict]) -> None:
     for source, items in by_source.items():
         blocks.append(_h1(source))
         for a in items:
+            url = a.get("url", "")
             children = [
-                _para(f"📎 URL: {a.get('url', '')}"),
                 _para(f"📅 公開日: {a.get('published', '')}"),
                 _para(a.get("description", "")),
             ]
+            if url:
+                children.append(_para_link("🔗 記事を読む", url))
             blocks.append(_toggle(a.get("title", ""), children))
         blocks.append(_divider())
 
@@ -385,7 +433,7 @@ def add_blocks_raw(page_id: str, articles: list[dict]) -> None:
 def _execute_job() -> None:
     log.info("━━━ Newspick ジョブ 開始 ━━━")
     try:
-        log.info("Step 1: ニュース収集")
+        log.info("Step 1: ニュース収集（本日分）")
         articles = collect_articles()
         if not articles:
             log.error("記事を1件も収集できませんでした → 中断")
@@ -440,7 +488,7 @@ def main() -> None:
     last_run_date: datetime.date | None = None
     try:
         while _running:
-            now   = datetime.datetime.now()
+            now   = datetime.datetime.now(_JST)
             today = now.date()
             if now.strftime("%H:%M") == SCHEDULE_TIME and last_run_date != today:
                 _execute_job()
