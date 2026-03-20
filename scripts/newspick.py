@@ -187,11 +187,16 @@ def _fetch_arxiv(max_results: int = 5) -> list[dict]:
 
 # ── ニュース収集 ───────────────────────────────────────────────────
 _RSS_SOURCES = [
-    ("TechCrunch AI",   "https://techcrunch.com/feed/"),
-    ("VentureBeat AI",  "https://venturebeat.com/feed/"),
-    ("The Verge AI",    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
-    ("Wired AI",        "https://www.wired.com/feed/rss"),
-    ("Google Alerts AI", "https://www.google.co.jp/alerts/feeds/07966966265337213514/5429403290748738893"),
+    ("TechCrunch AI",    "https://techcrunch.com/feed/"),
+    ("VentureBeat AI",   "https://venturebeat.com/feed/"),
+    ("The Verge AI",     "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
+    ("Wired AI",         "https://www.wired.com/feed/rss"),
+    ("Google Alerts 1",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/5429403290748738893"),
+    ("Google Alerts 2",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/5429403290748735905"),
+    ("Google Alerts 3",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/4912133052765876976"),
+    ("Google Alerts 4",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/4912133052765876727"),
+    ("Google Alerts 5",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/12790639888723147772"),
+    ("Google Alerts 6",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/18339811749606432890"),
 ]
 
 def collect_articles() -> list[dict]:
