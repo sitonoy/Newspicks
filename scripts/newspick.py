@@ -243,12 +243,18 @@ def analyze_with_gemini(articles: list[dict]) -> dict | None:
             log.info(f"Gemini 分析完了: {len(result.get('articles', []))} 件")
             return result
         except Exception as e:
+            # HTTPError の場合はレスポンスボディも出力する
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")  # type: ignore
+            except Exception:
+                pass
             if attempt < 2:
-                wait = 30 * (attempt + 1)  # 30秒 → 60秒
-                log.warning(f"Gemini API リトライ {attempt+1}/3 ({wait}秒待機): {e}")
+                wait = 30 * (attempt + 1)
+                log.warning(f"Gemini API リトライ {attempt+1}/3 ({wait}秒待機): {e} | body={body[:300]}")
                 time.sleep(wait)
             else:
-                log.error(f"Gemini API 失敗: {e}")
+                log.error(f"Gemini API 失敗: {e} | body={body[:500]}")
                 return None
 
 # ── Notion API ────────────────────────────────────────────────────
