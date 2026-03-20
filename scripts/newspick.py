@@ -187,10 +187,11 @@ def _fetch_arxiv(max_results: int = 5) -> list[dict]:
 
 # ── ニュース収集 ───────────────────────────────────────────────────
 _RSS_SOURCES = [
-    ("TechCrunch AI",  "https://techcrunch.com/feed/"),
-    ("VentureBeat AI", "https://venturebeat.com/feed/"),
-    ("The Verge AI",   "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
-    ("Wired AI",       "https://www.wired.com/feed/rss"),
+    ("TechCrunch AI",   "https://techcrunch.com/feed/"),
+    ("VentureBeat AI",  "https://venturebeat.com/feed/"),
+    ("The Verge AI",    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
+    ("Wired AI",        "https://www.wired.com/feed/rss"),
+    ("Google Alerts AI", "https://www.google.co.jp/alerts/feeds/07966966265337213514/5429403290748738893"),
 ]
 
 def collect_articles() -> list[dict]:
