@@ -48,7 +48,7 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 NOTION_VERSION     = "2022-06-28"
 SCHEDULE_TIME      = os.environ.get("SCHEDULE_TIME", "08:30")
 CHECK_INTERVAL_SEC = int(os.environ.get("CHECK_INTERVAL_SEC", "30"))
-GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ── ロギング ──────────────────────────────────────────────────────
 logging.basicConfig(
