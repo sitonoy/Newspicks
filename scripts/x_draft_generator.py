@@ -142,37 +142,27 @@ def _get_page_content(page_id: str) -> tuple[str, list[dict]]:
 
 # ── GitHub Models API ──────────────────────────────────────────────
 _DRAFT_PROMPT = """\
-あなたはAIコンサルタントです。以下の本日のAI最新ニュースを読み、JSONで出力してください。
+あなたはAI業界に詳しいコンサルタントです。以下の本日のAI最新ニュースを読み、Xへの投稿文を作成してください。
 
-【出力形式（JSONのみ。説明・コードブロック不要）】
-{{
-  "post": "Xへの投稿文（140文字以内）",
-  "insights": "AIコンサルタントとしてのビジネス活用示唆（200文字程度）"
-}}
-
-【post の条件】
-- 冒頭の1文: 本日のAIニュース全体を踏まえて「ビジネスにどんな影響があるか」を一言でまとめる
-- 直近で確認したニュースをまとめた、という自然な人間らしい文体
+【条件】
+- 冒頭の1文: 本日のニュース全体を踏まえて「ビジネスにどんな影響があるか」を具体的かつ断言する（例: 「〜が加速する」「〜が変わる」等）
+- その後: 直近で確認した主要ニュースを3件程度、簡潔に列挙する（体言止め推奨）
 - ハッシュタグを2〜3個（内容に合わせて #AI #AIニュース #生成AI 等）
-- 140文字以内、絵文字なし
-
-【insights の条件】
-- 本日のニュースからAIコンサルタントとして読み取れるビジネス活用の仮説を書く
-- 「どの業種・業務に」「どう使えるか」「今から動くべき理由」を含める
-- 断定口調（〜と考えられる、ではなく〜だ、〜すべき）
-- 200文字程度
+- 全体で140文字以内
+- 絵文字なし
+- 投稿文のみ出力（説明・前置き・JSON不要）
 
 【ニュース内容】
 {content}
 """
 
-def generate_x_draft(content: str) -> dict:
+def generate_x_draft(content: str) -> str:
     prompt = _DRAFT_PROMPT.format(content=content[:3000])
     body = json.dumps({
         "model": AI_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 1024,
+        "max_tokens": 512,
     }).encode()
     req = Request(AI_ENDPOINT, data=body, method="POST", headers={
         "Content-Type": "application/json",
@@ -182,14 +172,9 @@ def generate_x_draft(content: str) -> dict:
         try:
             with urlopen(req, timeout=60) as r:
                 resp = json.loads(r.read())
-            raw = resp["choices"][0]["message"]["content"].strip()
-            if "```json" in raw:
-                raw = raw.split("```json")[1].split("```")[0].strip()
-            elif "```" in raw:
-                raw = raw.split("```")[1].split("```")[0].strip()
-            result = json.loads(raw)
-            log.info(f"生成完了 — post: {len(result['post'])} 文字")
-            return result
+            text = resp["choices"][0]["message"]["content"].strip()
+            log.info(f"生成完了 — {len(text)} 文字")
+            return text
         except Exception as e:
             if attempt < 2:
                 log.warning(f"AI API リトライ {attempt+1}/3: {e}")
@@ -214,21 +199,14 @@ def _para_link(label: str, url: str) -> dict:
 def _divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
 
-def _append_draft_to_page(page_id: str, result: dict, urls: list[dict]) -> None:
-    post     = result.get("post", "")
-    insights = result.get("insights", "")
+def _append_draft_to_page(page_id: str, post: str, urls: list[dict]) -> None:
+    children: list[dict] = [_para(post)]
 
-    children: list[dict] = [_para(post), _divider()]
-
-    # 参考資料
-    children.append(_h3("参考資料"))
-    for u in urls[:10]:
-        children.append(_para_link(u.get("title", u["url"]), u["url"]))
-
-    # AIコンサルタント示唆
-    children.append(_divider())
-    children.append(_h3("AIコンサルタント示唆"))
-    children.append(_para(insights))
+    if urls:
+        children.append(_divider())
+        children.append(_h3("参考資料"))
+        for u in urls[:10]:
+            children.append(_para_link(u.get("title", u["url"]), u["url"]))
 
     blocks = [
         _divider(),
@@ -266,11 +244,10 @@ def main() -> None:
         sys.exit(1)
     log.info(f"Notion コンテンツ取得: {len(content)} 文字 / URL: {len(urls)} 件")
 
-    result = generate_x_draft(content)
-    log.info(f"投稿文:\n{result.get('post', '')}")
-    log.info(f"示唆:\n{result.get('insights', '')}")
+    post = generate_x_draft(content)
+    log.info(f"投稿文:\n{post}")
 
-    _append_draft_to_page(page_id, result, urls)
+    _append_draft_to_page(page_id, post, urls)
 
     log.info("━━━ X 下書き生成 完了 ━━━")
 
