@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Newspick — Gemini API 版
-毎日 AI 関連ニュースを RSS/arXiv から収集し、Gemini で要約・分類、Notion に転記する。
-外部ライブラリ不要（Python 標準ライブラリのみ使用）。
+Newspick — GitHub Models API 版
+毎日 AI 関連ニュースを RSS/arXiv から収集し、GitHub Models で和訳・要約・分類、
+Notion にトグル形式で転記する。外部ライブラリ不要。
 
 起動（即時実行）: python scripts/newspick.py --now
 起動（デーモン）: python scripts/newspick.py
-停止: Ctrl+C
 """
 
 import datetime
@@ -42,13 +41,14 @@ def _load_env(path: Path) -> None:
 _load_env(ENV_FILE)
 
 # ── 設定 ──────────────────────────────────────────────────────────
-GROQ_API_KEY       = os.environ.get("GROQ_API_KEY", "").strip()
+AI_API_TOKEN       = os.environ.get("AI_API_TOKEN", "").strip()
 NOTION_API_KEY     = os.environ.get("NOTION_API_KEY", "")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 NOTION_VERSION     = "2022-06-28"
 SCHEDULE_TIME      = os.environ.get("SCHEDULE_TIME", "08:30")
 CHECK_INTERVAL_SEC = int(os.environ.get("CHECK_INTERVAL_SEC", "30"))
-GROQ_MODEL         = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+AI_MODEL           = os.environ.get("AI_MODEL", "gpt-4o-mini")
+AI_ENDPOINT        = os.environ.get("AI_ENDPOINT", "https://models.inference.ai.azure.com/chat/completions")
 
 # ── ロギング ──────────────────────────────────────────────────────
 logging.basicConfig(
@@ -65,18 +65,18 @@ log = logging.getLogger("newspick")
 # ── バリデーション ─────────────────────────────────────────────────
 def _validate() -> bool:
     missing = [k for k, v in {
+        "AI_API_TOKEN":       AI_API_TOKEN,
         "NOTION_API_KEY":     NOTION_API_KEY,
         "NOTION_DATABASE_ID": NOTION_DATABASE_ID,
     }.items() if not v]
     if missing:
         log.error(f"未設定の必須項目: {', '.join(missing)}")
-        log.error(f"  {ENV_FILE} に設定してください（.env.example 参照）")
         return False
     return True
 
 # ── HTTP ユーティリティ ────────────────────────────────────────────
 _HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; Newspick/2.0; +https://github.com/sitonoy/Newspicks)"
+    "User-Agent": "Mozilla/5.0 (compatible; Newspick/3.0)"
 }
 
 def _get(url: str, timeout: int = 20) -> str:
@@ -111,13 +111,12 @@ def _parse_rss(content: str, source: str, max_items: int = 5) -> list[dict]:
                 if tag == "link" and not (el.text or "").strip():
                     return el.get("href", "")
                 return (el.text or "").strip()
-
             title = _t("title")
             url   = _t("link") or _t("id")
             pub   = _t("pubDate") or _t("updated") or _t("published")
             desc  = _t("description") or _t("summary") or _t("content")
-            if len(desc) > 600:
-                desc = desc[:600] + "..."
+            if len(desc) > 500:
+                desc = desc[:500] + "..."
             if title and url:
                 results.append({"title": title, "url": url, "published": pub,
                                  "description": desc, "source": source})
@@ -137,7 +136,7 @@ def _fetch_arxiv(max_results: int = 5) -> list[dict]:
     if not content:
         return []
     try:
-        root    = ET.fromstring(content)
+        root = ET.fromstring(content)
         results = []
         for entry in root.findall(f"{{{_ATOM_NS}}}entry"):
             def _t(tag: str) -> str:
@@ -146,7 +145,7 @@ def _fetch_arxiv(max_results: int = 5) -> list[dict]:
             title   = _t("title").replace("\n", " ")
             link    = _t("id")
             pub     = _t("published")
-            summary = _t("summary")[:500]
+            summary = _t("summary")[:400]
             if title and link:
                 results.append({"title": title, "url": link, "published": pub,
                                  "description": summary, "source": "arXiv cs.AI"})
@@ -170,66 +169,64 @@ def collect_articles() -> list[dict]:
         articles = _parse_rss(_get(url), source=name)
         all_articles.extend(articles)
         log.info(f"    → {len(articles)} 件")
-
     log.info("  収集: arXiv cs.AI")
     arxiv = _fetch_arxiv(5)
     all_articles.extend(arxiv)
     log.info(f"    → {len(arxiv)} 件")
-
     log.info(f"合計 {len(all_articles)} 件収集完了")
     return all_articles
 
-# ── Groq API ─────────────────────────────────────────────────────
-_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
+# ── AI 分析（GitHub Models） ──────────────────────────────────────
 _ANALYSIS_PROMPT = """\
-あなたはAI業界のアナリストです。以下の記事リストを分析し、指定のJSON形式で構造化してください。
+あなたはAI業界のアナリストです。以下の記事リストを日本語に翻訳・分析し、JSONで出力してください。
 
 ## 入力記事
 {articles_json}
 
-## 出力（JSONのみ。前後に説明・コードブロック不要）
+## 出力（JSONのみ。説明・コードブロック不要）
 {{
   "articles": [
     {{
       "title_ja": "日本語タイトル",
-      "title_en": "元の英語タイトル",
-      "url": "記事URL",
-      "source": "ソース名",
-      "published": "公開日",
+      "url": "記事URL（変更しない）",
+      "source": "ソース名（変更しない）",
+      "published": "公開日（変更しない）",
       "summary_ja": "日本語要約（3文以内）",
+      "business_use": "AIビジネス活用の観点からの示唆（1〜2文。該当なければ空文字）",
       "category": "LLM・基盤モデル | 画像・マルチモーダル | エージェント・自動化 | 規制・政策・倫理 | 研究・論文 | ビジネス・投資",
       "impact": "High | Medium | Low",
-      "impact_reason": "インパクトの理由（1文）"
+      "impact_reason": "インパクト理由（1文）"
     }}
   ],
   "trend_summary": {{
     "themes": ["主要テーマ1", "主要テーマ2", "主要テーマ3"],
-    "insight": "来週への示唆（1文）"
+    "business_insight": "今週のAIビジネス活用における示唆（1〜2文）"
   }}
 }}
 
 ## 判定基準
-- High: 業界全体に影響する重大ニュース（主要モデルリリース、規制決定、巨額投資等）
+- High: 業界全体に影響する重大ニュース
 - Medium: 特定領域の重要動向
-- Low: トレンド把握用の参考情報
+- Low: トレンド把握用
 """
 
-def analyze_with_groq(articles: list[dict]) -> dict | None:
+def analyze_with_ai(articles: list[dict]) -> dict | None:
+    if not AI_API_TOKEN:
+        log.warning("AI_API_TOKEN 未設定 → AI 分析をスキップ")
+        return None
     prompt = _ANALYSIS_PROMPT.format(
         articles_json=json.dumps(articles, ensure_ascii=False, indent=2)
     )
     body = json.dumps({
-        "model": GROQ_MODEL,
+        "model": AI_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
         "max_tokens": 8192,
     }).encode()
-    req = Request(_GROQ_URL, data=body, method="POST", headers={
+    req = Request(AI_ENDPOINT, data=body, method="POST", headers={
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {AI_API_TOKEN}",
     })
-
     for attempt in range(3):
         try:
             with urlopen(req, timeout=60) as r:
@@ -240,7 +237,7 @@ def analyze_with_groq(articles: list[dict]) -> dict | None:
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0].strip()
             result = json.loads(text)
-            log.info(f"Groq 分析完了: {len(result.get('articles', []))} 件")
+            log.info(f"AI 分析完了: {len(result.get('articles', []))} 件")
             return result
         except Exception as e:
             err_body = ""
@@ -249,11 +246,11 @@ def analyze_with_groq(articles: list[dict]) -> dict | None:
             except Exception:
                 pass
             if attempt < 2:
-                wait = 10 * (attempt + 1)
-                log.warning(f"Groq API リトライ {attempt+1}/3 ({wait}秒待機): {e} | body={err_body[:300]}")
+                wait = 15 * (attempt + 1)
+                log.warning(f"AI API リトライ {attempt+1}/3 ({wait}秒待機): {e} | {err_body[:200]}")
                 time.sleep(wait)
             else:
-                log.error(f"Groq API 失敗: {e} | body={err_body[:500]}")
+                log.error(f"AI API 失敗: {e} | {err_body[:400]}")
                 return None
 
 # ── Notion API ────────────────────────────────────────────────────
@@ -287,8 +284,7 @@ def _create_page() -> str:
         },
     })
     page_id  = result["id"]
-    page_url = f"https://notion.so/{page_id.replace('-', '')}"
-    log.info(f"Notion ページ作成: {page_url}")
+    log.info(f"Notion ページ作成: https://notion.so/{page_id.replace('-', '')}")
     return page_id
 
 # ── Notion ブロックビルダー ────────────────────────────────────────
@@ -298,10 +294,6 @@ def _rich(text: str) -> list:
 def _h1(text: str) -> dict:
     return {"object": "block", "type": "heading_1",
             "heading_1": {"rich_text": _rich(text)}}
-
-def _h2(text: str) -> dict:
-    return {"object": "block", "type": "heading_2",
-            "heading_2": {"rich_text": _rich(text)}}
 
 def _para(text: str) -> dict:
     return {"object": "block", "type": "paragraph",
@@ -314,20 +306,63 @@ def _bullet(text: str) -> dict:
 def _divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
 
-def _article_blocks(a: dict) -> list[dict]:
-    return [
-        _h2(a.get("title_ja", "")),
-        _para(f"原文: {a.get('title_en', '')}"),
-        _para(f"URL: {a.get('url', '')}"),
-        _para(f"ソース: {a.get('source', '')}  |  {a.get('published', '')}"),
-        _para(f"カテゴリ: {a.get('category', '')}"),
-        _para(a.get("summary_ja", "")),
-        _para(f"インパクト [{a.get('impact', '')}]: {a.get('impact_reason', '')}"),
-        _divider(),
+def _toggle(title: str, children: list[dict]) -> dict:
+    return {
+        "object": "block",
+        "type": "toggle",
+        "toggle": {
+            "rich_text": _rich(title),
+            "children": children,
+        },
+    }
+
+def _article_toggle(a: dict) -> dict:
+    """記事1件をトグルブロックに変換"""
+    impact_icon = {"High": "🔴", "Medium": "🟡", "Low": "🔵"}.get(a.get("impact", ""), "⚪")
+    title = f"{impact_icon} {a.get('title_ja', a.get('title', ''))}"
+    children = [
+        _para(f"📎 URL: {a.get('url', '')}"),
+        _para(f"📅 公開日: {a.get('published', '')}  |  📌 {a.get('source', '')}"),
+        _para(f"🏷 カテゴリ: {a.get('category', '')}"),
+        _para(f"📝 {a.get('summary_ja', a.get('description', ''))}"),
     ]
+    if a.get("business_use"):
+        children.append(_para(f"💼 ビジネス活用: {a['business_use']}"))
+    children.append(_para(f"📊 インパクト [{a.get('impact', '')}]: {a.get('impact_reason', '')}"))
+    return _toggle(title, children)
+
+def _send_blocks(page_id: str, blocks: list[dict]) -> None:
+    """50件ずつ分割して Notion に送信"""
+    for i in range(0, len(blocks), 50):
+        chunk = blocks[i:i + 50]
+        _notion("PATCH", f"blocks/{page_id}/children", {"children": chunk})
+        log.info(f"ブロック追加: {i+1}〜{i+len(chunk)} / {len(blocks)}")
+
+def add_blocks_analyzed(page_id: str, analysis: dict) -> None:
+    """AI 分析結果をトグル形式で転記"""
+    articles = analysis.get("articles", [])
+    high   = [a for a in articles if a.get("impact") == "High"]
+    medium = [a for a in articles if a.get("impact") == "Medium"]
+    low    = [a for a in articles if a.get("impact") == "Low"]
+
+    blocks: list[dict] = [_h1("🔴 Top Pick（High Impact）")]
+    blocks += [_article_toggle(a) for a in high] or [_para("該当なし")]
+    blocks.append(_h1("🟡 注目記事（Medium Impact）"))
+    blocks += [_article_toggle(a) for a in medium] or [_para("該当なし")]
+    blocks.append(_h1("🔵 参考情報（Low Impact）"))
+    blocks += [_article_toggle(a) for a in low] or [_para("該当なし")]
+
+    trend = analysis.get("trend_summary", {})
+    blocks.append(_h1("📊 本日のトレンドサマリー"))
+    for theme in trend.get("themes", []):
+        blocks.append(_bullet(theme))
+    if trend.get("business_insight"):
+        blocks.append(_para(f"💼 ビジネス示唆: {trend['business_insight']}"))
+
+    _send_blocks(page_id, blocks)
 
 def add_blocks_raw(page_id: str, articles: list[dict]) -> None:
-    """AI 分析なし: 収集した記事をソース別にそのまま Notion に転記する"""
+    """AI 分析なし: ソース別トグルで転記（フォールバック用）"""
     by_source: dict[str, list[dict]] = {}
     for a in articles:
         by_source.setdefault(a.get("source", "Other"), []).append(a)
@@ -336,60 +371,15 @@ def add_blocks_raw(page_id: str, articles: list[dict]) -> None:
     for source, items in by_source.items():
         blocks.append(_h1(source))
         for a in items:
-            blocks.append(_h2(a.get("title", "")))
-            blocks.append(_para(f"URL: {a.get('url', '')}"))
-            blocks.append(_para(f"公開日: {a.get('published', '')}"))
-            if a.get("description"):
-                blocks.append(_para(a["description"]))
-            blocks.append(_divider())
+            children = [
+                _para(f"📎 URL: {a.get('url', '')}"),
+                _para(f"📅 公開日: {a.get('published', '')}"),
+                _para(a.get("description", "")),
+            ]
+            blocks.append(_toggle(a.get("title", ""), children))
+        blocks.append(_divider())
 
-    for i in range(0, len(blocks), 50):
-        chunk = blocks[i:i + 50]
-        _notion("PATCH", f"blocks/{page_id}/children", {"children": chunk})
-        log.info(f"ブロック追加: {i+1}〜{i+len(chunk)} / {len(blocks)}")
-
-
-def add_blocks(page_id: str, analysis: dict) -> None:
-    articles = analysis.get("articles", [])
-    high   = [a for a in articles if a.get("impact") == "High"]
-    medium = [a for a in articles if a.get("impact") == "Medium"]
-    low    = [a for a in articles if a.get("impact") == "Low"]
-
-    blocks: list[dict] = []
-
-    blocks.append(_h1("🔴 Top Pick（High Impact）"))
-    if high:
-        for a in high:
-            blocks.extend(_article_blocks(a))
-    else:
-        blocks.append(_para("該当なし"))
-
-    blocks.append(_h1("🟡 注目記事（Medium Impact）"))
-    if medium:
-        for a in medium:
-            blocks.extend(_article_blocks(a))
-    else:
-        blocks.append(_para("該当なし"))
-
-    blocks.append(_h1("🔵 参考情報（Low Impact）"))
-    if low:
-        for a in low:
-            blocks.extend(_article_blocks(a))
-    else:
-        blocks.append(_para("該当なし"))
-
-    trend = analysis.get("trend_summary", {})
-    blocks.append(_h1("📊 本日のトレンドサマリー"))
-    for theme in trend.get("themes", []):
-        blocks.append(_bullet(theme))
-    if trend.get("insight"):
-        blocks.append(_para(f"来週への示唆: {trend['insight']}"))
-
-    # Notion は1リクエスト100ブロックまで → 50件ずつ分割送信
-    for i in range(0, len(blocks), 50):
-        chunk = blocks[i:i + 50]
-        _notion("PATCH", f"blocks/{page_id}/children", {"children": chunk})
-        log.info(f"ブロック追加: {i+1}〜{i+len(chunk)} / {len(blocks)}")
+    _send_blocks(page_id, blocks)
 
 # ── ジョブ ────────────────────────────────────────────────────────
 def _execute_job() -> None:
@@ -401,11 +391,18 @@ def _execute_job() -> None:
             log.error("記事を1件も収集できませんでした → 中断")
             return
 
-        log.info("Step 2: Notion ページ作成")
+        log.info("Step 2: AI 分析（和訳・要約・分類）")
+        analysis = analyze_with_ai(articles)
+
+        log.info("Step 3: Notion ページ作成")
         page_id = _create_page()
 
-        log.info("Step 3: Notion ブロック追加")
-        add_blocks_raw(page_id, articles)
+        log.info("Step 4: Notion ブロック追加")
+        if analysis:
+            add_blocks_analyzed(page_id, analysis)
+        else:
+            log.warning("AI 分析失敗 → 英文のままトグル形式で転記")
+            add_blocks_raw(page_id, articles)
 
     except Exception:
         log.exception("ジョブ実行中に例外が発生しました")
