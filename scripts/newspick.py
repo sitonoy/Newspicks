@@ -65,7 +65,6 @@ log = logging.getLogger("newspick")
 # ── バリデーション ─────────────────────────────────────────────────
 def _validate() -> bool:
     missing = [k for k, v in {
-        "GROQ_API_KEY":       GROQ_API_KEY,
         "NOTION_API_KEY":     NOTION_API_KEY,
         "NOTION_DATABASE_ID": NOTION_DATABASE_ID,
     }.items() if not v]
@@ -327,6 +326,29 @@ def _article_blocks(a: dict) -> list[dict]:
         _divider(),
     ]
 
+def add_blocks_raw(page_id: str, articles: list[dict]) -> None:
+    """AI 分析なし: 収集した記事をソース別にそのまま Notion に転記する"""
+    by_source: dict[str, list[dict]] = {}
+    for a in articles:
+        by_source.setdefault(a.get("source", "Other"), []).append(a)
+
+    blocks: list[dict] = []
+    for source, items in by_source.items():
+        blocks.append(_h1(source))
+        for a in items:
+            blocks.append(_h2(a.get("title", "")))
+            blocks.append(_para(f"URL: {a.get('url', '')}"))
+            blocks.append(_para(f"公開日: {a.get('published', '')}"))
+            if a.get("description"):
+                blocks.append(_para(a["description"]))
+            blocks.append(_divider())
+
+    for i in range(0, len(blocks), 50):
+        chunk = blocks[i:i + 50]
+        _notion("PATCH", f"blocks/{page_id}/children", {"children": chunk})
+        log.info(f"ブロック追加: {i+1}〜{i+len(chunk)} / {len(blocks)}")
+
+
 def add_blocks(page_id: str, analysis: dict) -> None:
     articles = analysis.get("articles", [])
     high   = [a for a in articles if a.get("impact") == "High"]
@@ -379,17 +401,11 @@ def _execute_job() -> None:
             log.error("記事を1件も収集できませんでした → 中断")
             return
 
-        log.info("Step 2: Groq で分析・構造化")
-        analysis = analyze_with_groq(articles)
-        if not analysis:
-            log.error("Groq 分析失敗 → 中断")
-            return
-
-        log.info("Step 3: Notion ページ作成")
+        log.info("Step 2: Notion ページ作成")
         page_id = _create_page()
 
-        log.info("Step 4: Notion ブロック追加")
-        add_blocks(page_id, analysis)
+        log.info("Step 3: Notion ブロック追加")
+        add_blocks_raw(page_id, articles)
 
     except Exception:
         log.exception("ジョブ実行中に例外が発生しました")
