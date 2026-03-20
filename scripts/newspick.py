@@ -42,13 +42,13 @@ def _load_env(path: Path) -> None:
 _load_env(ENV_FILE)
 
 # ── 設定 ──────────────────────────────────────────────────────────
-GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "").strip()
+GROQ_API_KEY       = os.environ.get("GROQ_API_KEY", "").strip()
 NOTION_API_KEY     = os.environ.get("NOTION_API_KEY", "")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 NOTION_VERSION     = "2022-06-28"
 SCHEDULE_TIME      = os.environ.get("SCHEDULE_TIME", "08:30")
 CHECK_INTERVAL_SEC = int(os.environ.get("CHECK_INTERVAL_SEC", "30"))
-GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_MODEL         = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # ── ロギング ──────────────────────────────────────────────────────
 logging.basicConfig(
@@ -65,7 +65,7 @@ log = logging.getLogger("newspick")
 # ── バリデーション ─────────────────────────────────────────────────
 def _validate() -> bool:
     missing = [k for k, v in {
-        "GEMINI_API_KEY":     GEMINI_API_KEY,
+        "GROQ_API_KEY":       GROQ_API_KEY,
         "NOTION_API_KEY":     NOTION_API_KEY,
         "NOTION_DATABASE_ID": NOTION_DATABASE_ID,
     }.items() if not v]
@@ -180,8 +180,8 @@ def collect_articles() -> list[dict]:
     log.info(f"合計 {len(all_articles)} 件収集完了")
     return all_articles
 
-# ── Gemini API ────────────────────────────────────────────────────
-_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+# ── Groq API ─────────────────────────────────────────────────────
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 _ANALYSIS_PROMPT = """\
 あなたはAI業界のアナリストです。以下の記事リストを分析し、指定のJSON形式で構造化してください。
@@ -216,45 +216,45 @@ _ANALYSIS_PROMPT = """\
 - Low: トレンド把握用の参考情報
 """
 
-def analyze_with_gemini(articles: list[dict]) -> dict | None:
+def analyze_with_groq(articles: list[dict]) -> dict | None:
     prompt = _ANALYSIS_PROMPT.format(
         articles_json=json.dumps(articles, ensure_ascii=False, indent=2)
     )
-    url  = f"{_GEMINI_BASE}/{GEMINI_MODEL}:generateContent"
     body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 8192,
     }).encode()
-    req = Request(url, data=body, method="POST", headers={
+    req = Request(_GROQ_URL, data=body, method="POST", headers={
         "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY,
+        "Authorization": f"Bearer {GROQ_API_KEY}",
     })
 
     for attempt in range(3):
         try:
             with urlopen(req, timeout=60) as r:
                 resp = json.loads(r.read())
-            text = resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+            text = resp["choices"][0]["message"]["content"].strip()
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0].strip()
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0].strip()
             result = json.loads(text)
-            log.info(f"Gemini 分析完了: {len(result.get('articles', []))} 件")
+            log.info(f"Groq 分析完了: {len(result.get('articles', []))} 件")
             return result
         except Exception as e:
-            # HTTPError の場合はレスポンスボディも出力する
-            body = ""
+            err_body = ""
             try:
-                body = e.read().decode("utf-8", errors="replace")  # type: ignore
+                err_body = e.read().decode("utf-8", errors="replace")  # type: ignore
             except Exception:
                 pass
             if attempt < 2:
-                wait = 30 * (attempt + 1)
-                log.warning(f"Gemini API リトライ {attempt+1}/3 ({wait}秒待機): {e} | body={body[:300]}")
+                wait = 10 * (attempt + 1)
+                log.warning(f"Groq API リトライ {attempt+1}/3 ({wait}秒待機): {e} | body={err_body[:300]}")
                 time.sleep(wait)
             else:
-                log.error(f"Gemini API 失敗: {e} | body={body[:500]}")
+                log.error(f"Groq API 失敗: {e} | body={err_body[:500]}")
                 return None
 
 # ── Notion API ────────────────────────────────────────────────────
@@ -379,10 +379,10 @@ def _execute_job() -> None:
             log.error("記事を1件も収集できませんでした → 中断")
             return
 
-        log.info("Step 2: Gemini で分析・構造化")
-        analysis = analyze_with_gemini(articles)
+        log.info("Step 2: Groq で分析・構造化")
+        analysis = analyze_with_groq(articles)
         if not analysis:
-            log.error("Gemini 分析失敗 → 中断")
+            log.error("Groq 分析失敗 → 中断")
             return
 
         log.info("Step 3: Notion ページ作成")
