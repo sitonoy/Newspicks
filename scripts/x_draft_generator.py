@@ -102,46 +102,77 @@ def _find_today_page() -> str | None:
     log.info(f"Notion ページ発見: {page_id}")
     return page_id
 
-def _get_page_text(page_id: str) -> str:
-    """ページのテキストコンテンツを抽出する"""
+def _get_page_content(page_id: str) -> tuple[str, list[dict]]:
+    """ページのテキストと記事URLリスト（title, url）を返す"""
     blocks = _notion("GET", f"blocks/{page_id}/children?page_size=100")
 
     parts = []
+    urls: list[dict] = []
+
     for block in blocks.get("results", []):
         btype = block.get("type", "")
         if btype in ("paragraph", "heading_1", "heading_2", "heading_3",
-                     "bulleted_list_item", "numbered_list_item", "callout", "toggle"):
+                     "bulleted_list_item", "numbered_list_item", "callout"):
             rich_text = block.get(btype, {}).get("rich_text", [])
             text = "".join(t["plain_text"] for t in rich_text)
             if text.strip():
                 parts.append(text.strip())
+        elif btype == "toggle":
+            rich_text = block.get("toggle", {}).get("rich_text", [])
+            title = "".join(t["plain_text"] for t in rich_text).strip()
+            if title:
+                parts.append(title)
+            # トグルの子ブロックからURLを抽出
+            block_id = block["id"]
+            time.sleep(0.35)  # Notion rate limit (3 req/s)
+            children = _notion("GET", f"blocks/{block_id}/children?page_size=20")
+            for child in children.get("results", []):
+                if child.get("type") != "paragraph":
+                    continue
+                for rt in child.get("paragraph", {}).get("rich_text", []):
+                    link = rt.get("text", {}).get("link") or {}
+                    url = link.get("url", "")
+                    if url and url.startswith("http"):
+                        label = rt.get("text", {}).get("content", url)
+                        if not any(u["url"] == url for u in urls):
+                            urls.append({"title": title, "url": url, "label": label})
 
-    return "\n".join(parts)
+    log.info(f"テキスト: {len(parts)} ブロック / URL: {len(urls)} 件")
+    return "\n".join(parts), urls
 
 # ── GitHub Models API ──────────────────────────────────────────────
 _DRAFT_PROMPT = """\
-以下は本日のAI最新ニュースのまとめです。
-このニュースを、Xに投稿する下書き文として書き直してください。
+あなたはAIコンサルタントです。以下の本日のAI最新ニュースを読み、JSONで出力してください。
 
-【条件】
+【出力形式（JSONのみ。説明・コードブロック不要）】
+{{
+  "post": "Xへの投稿文（140文字以内）",
+  "insights": "AIコンサルタントとしてのビジネス活用示唆（200文字程度）"
+}}
+
+【post の条件】
 - 冒頭の1文: 本日のAIニュース全体を踏まえて「ビジネスにどんな影響があるか」を一言でまとめる
-- その後: 直近で確認したニュースをまとめた、という自然な人間らしい文体で記事の要点を続ける
-- ハッシュタグを2〜3個付ける（内容に合わせて #AI #AIニュース #生成AI などから選ぶ）
-- 全体で140文字以内に収める
-- 絵文字は使わない
-- 投稿文のみ出力（説明・前置き不要）
+- 直近で確認したニュースをまとめた、という自然な人間らしい文体
+- ハッシュタグを2〜3個（内容に合わせて #AI #AIニュース #生成AI 等）
+- 140文字以内、絵文字なし
+
+【insights の条件】
+- 本日のニュースからAIコンサルタントとして読み取れるビジネス活用の仮説を書く
+- 「どの業種・業務に」「どう使えるか」「今から動くべき理由」を含める
+- 断定口調（〜と考えられる、ではなく〜だ、〜すべき）
+- 200文字程度
 
 【ニュース内容】
 {content}
 """
 
-def generate_x_draft(content: str) -> str:
+def generate_x_draft(content: str) -> dict:
     prompt = _DRAFT_PROMPT.format(content=content[:3000])
     body = json.dumps({
         "model": AI_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 512,
+        "max_tokens": 1024,
     }).encode()
     req = Request(AI_ENDPOINT, data=body, method="POST", headers={
         "Content-Type": "application/json",
@@ -151,9 +182,14 @@ def generate_x_draft(content: str) -> str:
         try:
             with urlopen(req, timeout=60) as r:
                 resp = json.loads(r.read())
-            text = resp["choices"][0]["message"]["content"].strip()
-            log.info(f"X下書き生成完了 ({len(text)} 文字)")
-            return text
+            raw = resp["choices"][0]["message"]["content"].strip()
+            if "```json" in raw:
+                raw = raw.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw:
+                raw = raw.split("```")[1].split("```")[0].strip()
+            result = json.loads(raw)
+            log.info(f"生成完了 — post: {len(result['post'])} 文字")
+            return result
         except Exception as e:
             if attempt < 2:
                 log.warning(f"AI API リトライ {attempt+1}/3: {e}")
@@ -163,21 +199,44 @@ def generate_x_draft(content: str) -> str:
                 raise
 
 # ── Notion への書き戻し ───────────────────────────────────────────
-def _append_draft_to_page(page_id: str, draft_text: str) -> None:
+def _h3(text: str) -> dict:
+    return {"object": "block", "type": "heading_3",
+            "heading_3": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+def _para(text: str) -> dict:
+    return {"object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+def _para_link(label: str, url: str) -> dict:
+    return {"object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": label, "link": {"url": url}}}]}}
+
+def _divider() -> dict:
+    return {"object": "block", "type": "divider", "divider": {}}
+
+def _append_draft_to_page(page_id: str, result: dict, urls: list[dict]) -> None:
+    post     = result.get("post", "")
+    insights = result.get("insights", "")
+
+    children: list[dict] = [_para(post), _divider()]
+
+    # 参考資料
+    children.append(_h3("参考資料"))
+    for u in urls[:10]:
+        children.append(_para_link(u.get("title", u["url"]), u["url"]))
+
+    # AIコンサルタント示唆
+    children.append(_divider())
+    children.append(_h3("AIコンサルタント示唆"))
+    children.append(_para(insights))
+
     blocks = [
-        {"object": "block", "type": "divider", "divider": {}},
+        _divider(),
         {
             "object": "block", "type": "toggle",
             "toggle": {
                 "rich_text": [{"type": "text", "text": {"content": "X投稿下書き"}}],
-                "children": [
-                    {
-                        "object": "block", "type": "paragraph",
-                        "paragraph": {
-                            "rich_text": [{"type": "text", "text": {"content": draft_text}}]
-                        }
-                    }
-                ]
+                "children": children,
             }
         },
     ]
@@ -201,16 +260,17 @@ def main() -> None:
     if not page_id:
         sys.exit(1)
 
-    content = _get_page_text(page_id)
+    content, urls = _get_page_content(page_id)
     if not content:
         log.error("Notion コンテンツが空です")
         sys.exit(1)
-    log.info(f"Notion コンテンツ取得: {len(content)} 文字")
+    log.info(f"Notion コンテンツ取得: {len(content)} 文字 / URL: {len(urls)} 件")
 
-    draft_text = generate_x_draft(content)
-    log.info(f"生成下書き:\n{draft_text}")
+    result = generate_x_draft(content)
+    log.info(f"投稿文:\n{result.get('post', '')}")
+    log.info(f"示唆:\n{result.get('insights', '')}")
 
-    _append_draft_to_page(page_id, draft_text)
+    _append_draft_to_page(page_id, result, urls)
 
     log.info("━━━ X 下書き生成 完了 ━━━")
 
