@@ -48,7 +48,7 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 NOTION_VERSION     = "2022-06-28"
 SCHEDULE_TIME      = os.environ.get("SCHEDULE_TIME", "08:30")
 CHECK_INTERVAL_SEC = int(os.environ.get("CHECK_INTERVAL_SEC", "30"))
-GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
 # ── ロギング ──────────────────────────────────────────────────────
 logging.basicConfig(
@@ -158,10 +158,10 @@ def _fetch_arxiv(max_results: int = 5) -> list[dict]:
 
 # ── ニュース収集 ───────────────────────────────────────────────────
 _RSS_SOURCES = [
-    ("TechCrunch AI",  "https://techcrunch.com/category/artificial-intelligence/feed/"),
-    ("VentureBeat AI", "https://venturebeat.com/ai/feed/"),
+    ("TechCrunch AI",  "https://techcrunch.com/feed/"),
+    ("VentureBeat AI", "https://venturebeat.com/feed/"),
     ("The Verge AI",   "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
-    ("Wired AI",       "https://www.wired.com/feed/tag/ai/latest/rss"),
+    ("Wired AI",       "https://www.wired.com/feed/rss"),
 ]
 
 def collect_articles() -> list[dict]:
@@ -245,8 +245,9 @@ def analyze_with_gemini(articles: list[dict]) -> dict | None:
             return result
         except Exception as e:
             if attempt < 2:
-                log.warning(f"Gemini API リトライ {attempt+1}/3: {e}")
-                time.sleep(3)
+                wait = 30 * (attempt + 1)  # 30秒 → 60秒
+                log.warning(f"Gemini API リトライ {attempt+1}/3 ({wait}秒待機): {e}")
+                time.sleep(wait)
             else:
                 log.error(f"Gemini API 失敗: {e}")
                 return None
