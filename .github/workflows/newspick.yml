@@ -1,0 +1,36 @@
+name: Newspick Daily
+
+on:
+  schedule:
+    - cron: '30 23 * * *'  # 毎日 08:30 JST (= 23:30 UTC)
+  workflow_dispatch:         # 手動実行ボタン
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Node.js セットアップ
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Claude CLI インストール
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Newspick 実行
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          SCHEDULE_TIME: "08:30"
+        run: python scripts/newspick.py --now
