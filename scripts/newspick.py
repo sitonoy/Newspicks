@@ -114,18 +114,40 @@ def _parse_date(date_str: str) -> datetime.date | None:
         pass
     return None
 
-def filter_today(articles: list[dict]) -> list[dict]:
-    """本日（JST）の記事のみ返す。なければ全件返す"""
-    today = datetime.datetime.now(_JST).date()
-    today_articles = [a for a in articles if _parse_date(a.get("published", "")) == today]
-    if today_articles:
-        log.info(f"本日の記事: {len(today_articles)} 件（全 {len(articles)} 件中）")
-        return today_articles
-    log.info("本日付の記事なし → 最新記事を使用")
+def filter_24h(articles: list[dict]) -> list[dict]:
+    """過去24時間以内の記事のみ返す。なければ全件返す"""
+    cutoff = datetime.datetime.now(_JST) - datetime.timedelta(hours=24)
+    recent = []
+    for a in articles:
+        d = _parse_date(a.get("published", ""))
+        if d and d >= cutoff.date():
+            recent.append(a)
+    if recent:
+        log.info(f"過去24h の記事: {len(recent)} 件（全 {len(articles)} 件中）")
+        return recent
+    log.info("過去24h の記事なし → 最新記事を使用")
     return articles
 
 # ── RSS パーサー ──────────────────────────────────────────────────
 _ATOM_NS = "http://www.w3.org/2005/Atom"
+
+def _extract_feed_title(content: str) -> str | None:
+    """RSS/Atom フィードのタイトルを取得する"""
+    if not content:
+        return None
+    try:
+        root = ET.fromstring(content)
+        # RSS 2.0
+        el = root.find("channel/title")
+        if el is not None and el.text:
+            return el.text.strip()
+        # Atom
+        el = root.find(f"{{{_ATOM_NS}}}title")
+        if el is not None and el.text:
+            return el.text.strip()
+    except Exception:
+        pass
+    return None
 
 def _parse_rss(content: str, source: str, max_items: int = 5) -> list[dict]:
     if not content:
@@ -187,31 +209,44 @@ def _fetch_arxiv(max_results: int = 5) -> list[dict]:
 
 # ── ニュース収集 ───────────────────────────────────────────────────
 _RSS_SOURCES = [
-    ("TechCrunch AI",    "https://techcrunch.com/feed/"),
-    ("VentureBeat AI",   "https://venturebeat.com/feed/"),
-    ("The Verge AI",     "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
-    ("Wired AI",         "https://www.wired.com/feed/rss"),
-    ("Google Alerts 1",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/5429403290748738893"),
-    ("Google Alerts 2",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/5429403290748735905"),
-    ("Google Alerts 3",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/4912133052765876976"),
-    ("Google Alerts 4",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/4912133052765876727"),
-    ("Google Alerts 5",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/12790639888723147772"),
-    ("Google Alerts 6",  "https://www.google.co.jp/alerts/feeds/07966966265337213514/18339811749606432890"),
+    ("TechCrunch AI",  "https://techcrunch.com/feed/"),
+    ("VentureBeat AI", "https://venturebeat.com/feed/"),
+    ("The Verge AI",   "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
+    ("Wired AI",       "https://www.wired.com/feed/rss"),
+]
+
+_GOOGLE_ALERTS = [
+    "https://www.google.co.jp/alerts/feeds/07966966265337213514/5429403290748738893",
+    "https://www.google.co.jp/alerts/feeds/07966966265337213514/5429403290748735905",
+    "https://www.google.co.jp/alerts/feeds/07966966265337213514/4912133052765876976",
+    "https://www.google.co.jp/alerts/feeds/07966966265337213514/4912133052765876727",
+    "https://www.google.co.jp/alerts/feeds/07966966265337213514/12790639888723147772",
+    "https://www.google.co.jp/alerts/feeds/07966966265337213514/18339811749606432890",
 ]
 
 def collect_articles() -> list[dict]:
     all_articles = []
+
     for name, url in _RSS_SOURCES:
         log.info(f"  収集: {name}")
         articles = _parse_rss(_get(url), source=name)
         all_articles.extend(articles)
         log.info(f"    → {len(articles)} 件")
+
+    for url in _GOOGLE_ALERTS:
+        content  = _get(url)
+        name     = _extract_feed_title(content) or url.split("/")[-1]
+        articles = _parse_rss(content, source=name)
+        all_articles.extend(articles)
+        log.info(f"  収集: {name} → {len(articles)} 件")
+
     log.info("  収集: arXiv cs.AI")
     arxiv = _fetch_arxiv(5)
     all_articles.extend(arxiv)
     log.info(f"    → {len(arxiv)} 件")
+
     log.info(f"合計 {len(all_articles)} 件収集完了")
-    return filter_today(all_articles)
+    return filter_24h(all_articles)
 
 # ── AI 分析（GitHub Models） ──────────────────────────────────────
 _ANALYSIS_PROMPT = """\
