@@ -198,6 +198,10 @@ def generate_x_draft(content: str) -> str:
                 raise
 
 # ── Notion への書き戻し ───────────────────────────────────────────
+def _h1(text: str) -> dict:
+    return {"object": "block", "type": "heading_1",
+            "heading_1": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
 def _h3(text: str) -> dict:
     return {"object": "block", "type": "heading_3",
             "heading_3": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
@@ -214,26 +218,20 @@ def _divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
 
 def _append_draft_to_page(page_id: str, post: str, urls: list[dict]) -> None:
-    children: list[dict] = [_para(post)]
+    blocks: list[dict] = [
+        _divider(),
+        _h1("📝 X投稿下書き"),
+        _para(post),
+    ]
 
     if urls:
-        children.append(_divider())
-        children.append(_h3("参考資料"))
+        blocks.append(_divider())
+        blocks.append(_h3("参考資料"))
         for u in urls[:10]:
-            children.append(_para_link(u.get("title", u["url"]), u["url"]))
+            blocks.append(_para_link(u.get("label", u.get("title", u["url"])), u["url"]))
 
-    blocks = [
-        _divider(),
-        {
-            "object": "block", "type": "toggle",
-            "toggle": {
-                "rich_text": [{"type": "text", "text": {"content": "X投稿下書き"}}],
-                "children": children,
-            }
-        },
-    ]
     _notion("PATCH", f"blocks/{page_id}/children", {"children": blocks})
-    log.info("Notion ページに X下書きトグルを追記しました")
+    log.info("Notion ページに X下書きセクションを追記しました")
 
 # ── メイン ────────────────────────────────────────────────────────
 def main() -> None:
