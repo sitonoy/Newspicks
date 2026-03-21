@@ -92,7 +92,9 @@ def _find_today_page() -> str | None:
         "filter": {
             "property": "名前",
             "title": {"equals": title}
-        }
+        },
+        "sorts": [{"timestamp": "created_time", "direction": "descending"}],
+        "page_size": 1,
     })
     pages = result.get("results", [])
     if not pages:
