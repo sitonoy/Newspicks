@@ -272,8 +272,11 @@ _ANALYSIS_PROMPT = """\
     }}
   ],
   "trend_summary": {{
-    "themes": ["主要テーマ1", "主要テーマ2", "主要テーマ3"],
-    "business_insight": "今日のAIビジネス活用における示唆（1〜2文）"
+    "themes": [
+      "「主語」が「何を」「どうした/どうなった」を15〜25文字で簡潔に（例: 「OpenAIがo3モデルをAPIで一般公開」「EUがAI法の施行細則を確定」）",
+      "同上",
+      "同上"
+    ]
   }}
 }}
 
@@ -430,12 +433,10 @@ def add_blocks_analyzed(page_id: str, analysis: dict) -> None:
 
     # トレンドサマリー
     trend = analysis.get("trend_summary", {})
-    if trend.get("themes") or trend.get("business_insight"):
+    if trend.get("themes"):
         blocks.append(_h1("📊 本日のトレンド"))
         for theme in trend.get("themes", []):
             blocks.append(_bullet(theme))
-        if trend.get("business_insight"):
-            blocks.append(_para(f"💼 ビジネス示唆: {trend['business_insight']}"))
         blocks.append(_divider())
 
     # 記事一覧
