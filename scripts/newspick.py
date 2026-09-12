@@ -42,14 +42,14 @@ def _load_env(path: Path) -> None:
 _load_env(ENV_FILE)
 
 # ── 設定 ──────────────────────────────────────────────────────────
-AI_API_TOKEN       = os.environ.get("AI_API_TOKEN", "").strip()
+GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "").strip()
 NOTION_API_KEY     = os.environ.get("NOTION_API_KEY", "")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 NOTION_VERSION     = "2022-06-28"
 SCHEDULE_TIME      = os.environ.get("SCHEDULE_TIME", "08:30")
 CHECK_INTERVAL_SEC = int(os.environ.get("CHECK_INTERVAL_SEC", "30"))
-AI_MODEL           = os.environ.get("AI_MODEL", "gpt-4o-mini")
-AI_ENDPOINT        = os.environ.get("AI_ENDPOINT", "https://models.inference.ai.azure.com/chat/completions")
+GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+_GEMINI_BASE       = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # JST タイムゾーン
 _JST = datetime.timezone(datetime.timedelta(hours=9))
@@ -69,7 +69,7 @@ log = logging.getLogger("newspick")
 # ── バリデーション ─────────────────────────────────────────────────
 def _validate() -> bool:
     missing = [k for k, v in {
-        "AI_API_TOKEN":       AI_API_TOKEN,
+        "GEMINI_API_KEY":     GEMINI_API_KEY,
         "NOTION_API_KEY":     NOTION_API_KEY,
         "NOTION_DATABASE_ID": NOTION_DATABASE_ID,
     }.items() if not v]
@@ -287,27 +287,26 @@ _ANALYSIS_PROMPT = """\
 """
 
 def analyze_with_ai(articles: list[dict]) -> dict | None:
-    if not AI_API_TOKEN:
-        log.warning("AI_API_TOKEN 未設定 → AI 分析をスキップ")
+    if not GEMINI_API_KEY:
+        log.warning("GEMINI_API_KEY 未設定 → AI 分析をスキップ")
         return None
     prompt = _ANALYSIS_PROMPT.format(
         articles_json=json.dumps(articles, ensure_ascii=False, indent=2)
     )
     body = json.dumps({
-        "model": AI_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "max_tokens": 8192,
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
     }).encode()
-    req = Request(AI_ENDPOINT, data=body, method="POST", headers={
+    url = f"{_GEMINI_BASE}/{GEMINI_MODEL}:generateContent"
+    req = Request(url, data=body, method="POST", headers={
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {AI_API_TOKEN}",
+        "x-goog-api-key": GEMINI_API_KEY,
     })
     for attempt in range(3):
         try:
             with urlopen(req, timeout=60) as r:
                 resp = json.loads(r.read())
-            text = resp["choices"][0]["message"]["content"].strip()
+            text = resp["candidates"][0]["content"]["parts"][0]["text"].strip()
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0].strip()
             elif "```" in text:

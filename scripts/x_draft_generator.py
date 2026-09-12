@@ -40,13 +40,12 @@ def _load_env(path: Path) -> None:
 _load_env(ENV_FILE)
 
 # ── 設定 ──────────────────────────────────────────────────────────
-AI_API_TOKEN       = os.environ.get("AI_API_TOKEN", "").strip()
+GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "").strip()
 NOTION_API_KEY     = os.environ.get("NOTION_API_KEY", "")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 NOTION_VERSION     = "2022-06-28"
-AI_MODEL           = os.environ.get("AI_MODEL", "gpt-4o-mini")
-AI_ENDPOINT        = os.environ.get("AI_ENDPOINT",
-                                    "https://models.inference.ai.azure.com/chat/completions")
+GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+_GEMINI_BASE       = "https://generativelanguage.googleapis.com/v1beta/models"
 
 _JST = datetime.timezone(datetime.timedelta(hours=9))
 
@@ -254,20 +253,19 @@ def generate_x_draft(content: str, urls: list[dict]) -> tuple[str, list[dict]]:
               .replace("{articles_list}", articles_list or "（記事リストなし）")
               .replace("{content}", content[:2500]))
     body = json.dumps({
-        "model": AI_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 600,
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 600},
     }).encode()
-    req = Request(AI_ENDPOINT, data=body, method="POST", headers={
+    url = f"{_GEMINI_BASE}/{GEMINI_MODEL}:generateContent"
+    req = Request(url, data=body, method="POST", headers={
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {AI_API_TOKEN}",
+        "x-goog-api-key": GEMINI_API_KEY,
     })
     for attempt in range(3):
         try:
             with urlopen(req, timeout=60) as r:
                 resp = json.loads(r.read())
-            raw = resp["choices"][0]["message"]["content"].strip()
+            raw = resp["candidates"][0]["content"]["parts"][0]["text"].strip()
             if "```" in raw:
                 raw = raw.split("```")[1].strip()
                 if raw.startswith("json"):
@@ -326,7 +324,7 @@ def _append_draft_to_page(page_id: str, post: str, urls: list[dict]) -> None:
 # ── メイン ────────────────────────────────────────────────────────
 def main() -> None:
     missing = [k for k, v in {
-        "AI_API_TOKEN":       AI_API_TOKEN,
+        "GEMINI_API_KEY":     GEMINI_API_KEY,
         "NOTION_API_KEY":     NOTION_API_KEY,
         "NOTION_DATABASE_ID": NOTION_DATABASE_ID,
     }.items() if not v]

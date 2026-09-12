@@ -11,7 +11,7 @@ GitHub Actions で動作するため、PC の電源状態に依存しません�
 
 | Secret 名 | 内容 |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API キー |
+| `GEMINI_API_KEY` | Google Gemini API キー |
 | `NOTION_API_KEY` | Notion Integration Token |
 | `NOTION_DATABASE_ID` | 転記先 Notion データベース ID |
 
