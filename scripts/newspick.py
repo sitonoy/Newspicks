@@ -48,7 +48,7 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 NOTION_VERSION     = "2022-06-28"
 SCHEDULE_TIME      = os.environ.get("SCHEDULE_TIME", "08:30")
 CHECK_INTERVAL_SEC = int(os.environ.get("CHECK_INTERVAL_SEC", "30"))
-GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 _GEMINI_BASE       = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # JST タイムゾーン
@@ -295,7 +295,11 @@ def analyze_with_ai(articles: list[dict]) -> dict | None:
     )
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 32768,
+            "thinkingConfig": {"thinkingLevel": "minimal"},
+        },
     }).encode()
     url = f"{_GEMINI_BASE}/{GEMINI_MODEL}:generateContent"
     req = Request(url, data=body, method="POST", headers={

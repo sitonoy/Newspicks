@@ -44,7 +44,7 @@ GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "").strip()
 NOTION_API_KEY     = os.environ.get("NOTION_API_KEY", "")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 NOTION_VERSION     = "2022-06-28"
-GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL       = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 _GEMINI_BASE       = "https://generativelanguage.googleapis.com/v1beta/models"
 
 _JST = datetime.timezone(datetime.timedelta(hours=9))
@@ -254,7 +254,11 @@ def generate_x_draft(content: str, urls: list[dict]) -> tuple[str, list[dict]]:
               .replace("{content}", content[:2500]))
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 600},
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 600,
+            "thinkingConfig": {"thinkingLevel": "minimal"},
+        },
     }).encode()
     url = f"{_GEMINI_BASE}/{GEMINI_MODEL}:generateContent"
     req = Request(url, data=body, method="POST", headers={
